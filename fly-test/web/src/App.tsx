@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 
 interface Datum {
@@ -6,12 +6,22 @@ interface Datum {
   time: string,
 }
 
-const HOST_ENDPOINT: string = "https://clankerdle-host-app.fly.dev";
+const HOST_ENDPOINT: string = "https://clankerdle-host-app.fly.dev/info";
 
-const addData = async (info: string, setData: React.Dispatch<React.SetStateAction<Datum[]>>) => {
-  const response = await fetch(`${HOST_ENDPOINT}/?info=${info}`);
-  const newData: Datum = await response.json();
-  setData(prevData => [...prevData, newData]);
+const addData = (info: string) => {
+  fetch(`${HOST_ENDPOINT}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/plain'
+    },
+    body: info,
+  });
+};
+
+const retrieveData = async (setData: React.Dispatch<React.SetStateAction<Datum[]>>) => {
+  const response = await fetch(`${HOST_ENDPOINT}`);
+  let data: Datum[] = await response.json();
+  setData(data);
 };
 
 function App() {
@@ -19,14 +29,19 @@ function App() {
 
   const [inputVal, setInputVal] = useState('');
 
+  useEffect(() => {
+    retrieveData(setData);
+  }, []);
+
   return (
     <>
       <section id="center">
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            addData(inputVal, setData);
+            addData(inputVal);
             setInputVal('');
+            retrieveData(setData);
           }}
         >
           <input
@@ -36,6 +51,12 @@ function App() {
           />
           <button type="submit">Add Data</button>
         </form>
+
+        <button 
+          onClick={() => retrieveData(setData)}
+        >
+          Retrieve Data
+        </button>
 
         {/* Display  data with some outlines and dividers */}
         {data.map((datum, index) => (
