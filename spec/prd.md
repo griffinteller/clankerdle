@@ -2,8 +2,6 @@
 
 Oct 3, 2026 · @Griffin
 
-*Revised: puzzles and config are stored in Postgres; the inference backend is Hugging Face transformers on Runpod GPU workers that scale to zero, woken when a player opens a puzzle; the launch model is Gemma 4 E2B (base), unquantized for now; the stack is set in `notes.md`. Implementation details are in `plan.md`.*
-
 ## Overview
 
 Clankerdle is a Wordle-style web game where players try to write like a base model. The game always serves the latest puzzle, which is made of several chat completions. Each completion shows a prompt and a partial assistant response, and the player types the next N tokens. The game scores the guess by the model's log probabilities.
@@ -111,6 +109,8 @@ A player who has already finished the latest puzzle sees their results instead o
 
 The architecture serves one requirement: change the rules, the content source, or the model without rewriting the game. Three interfaces carry that requirement. A config repository and a pluggable share formatter on the client support them.
 
+**Hosting.** Everything runs on Fly Machines (fly.io): the web app (client and game API) on a small always-on Machine, and the inference worker on a CPU Machine that is stopped when idle to keep costs negligible (see Cold starts).
+
 Figure: prototype architecture. Highlighted nodes are the swappable interfaces: swap the implementation, keep the game.
 
 ```mermaid
@@ -119,7 +119,7 @@ flowchart LR
   api["<b>Game API</b><br/>getCurrentPuzzle()<br/>submitGuess()<br/>warm()<br/>Rejects wrong token count"]
   repo["<b>PuzzleRepository + ConfigRepository</b><br/>Postgres: puzzles, config,<br/>models, tokenizers"]
   mode["<b>Mode = scorer + objective</b><br/>Highest prob, target prob<br/>Later: reward-model value modes"]
-  inf["<b>InferenceBackend</b><br/>Transformers worker on Runpod GPU<br/>(unquantized Gemma, scale to zero):<br/>guess logprobs,<br/>fixed-length beam search"]
+  inf["<b>InferenceBackend</b><br/>Transformers worker on a Fly CPU Machine<br/>(unquantized Gemma, stopped when idle):<br/>guess logprobs,<br/>fixed-length beam search"]
   store["<b>Cache and log</b> (Postgres)<br/>Beam results per completion<br/>Every submitted guess"]
   cli["<b>Admin CLI</b><br/>Push, publish, config"]
 
@@ -155,7 +155,7 @@ interface ConfigRepository {
 interface InferenceBackend {
   scoreTokens(model: ModelConfig, context: TokenIds, guess: TokenIds): Promise<number[]> // per-token logprobs
   beamSearch(model: ModelConfig, context: TokenIds, n: number, width: number): Promise<Beam[]> // all `width` final beams
-  warm(model: ModelConfig): Promise<void> // wake the worker ahead of the first guess
+  warm(model: ModelConfig): Promise<void> // start the CPU Machine ahead of the first guess
 }
 
 interface Scorer    { score(completion: Completion, guess: TokenIds): Promise<ScoredGuess> }
@@ -167,9 +167,9 @@ interface ShareFormatter { format(result: PuzzleResult): string }
 
 **Modes are compositions.** A mode pairs a scorer (what is measured) with an objective (what counts as good). Highest probability is the logprob scorer plus "close the gap to the best beam." Target probability is the logprob scorer plus "get close to the target." A reward-model value mode would later be a new scorer reusing the same objectives, which is the test that the abstraction is right. Guesses per completion is a rules setting read by the game loop, not by the modes.
 
-**InferenceBackend on Hugging Face transformers.** A custom Python worker on Runpod Serverless GPU workers runs the model with PyTorch and transformers. For now that means unquantized Gemma 4 E2B, baked into the worker image. The weights revision and the GPU type are pinned, because either one can shift scores slightly. A different quantization, engine (such as llama.cpp), or GPU type may come later. Adding a model means building and deploying a new worker image, but no game deploy. After a worker rebuild or a hardware change, devs explicitly refresh the cached beams. They're never recomputed automatically, so the bar can't move in the middle of a playtest. The worker keeps the engine behind its own interface, so none of these changes touches the game. Each quantization is registered as a separate model, because its scores aren't comparable with another quantization's. Scoring an arbitrary guess needs the log probabilities of tokens the model did not generate. The worker runs one forward pass over the context plus the guess, applies the sampling settings to the full logits, and reads off each guess token's log probability. Beam search is a custom loop that produces exactly N tokens and never picks special tokens. The API then drops sequences that don't survive a decode-and-retokenize round trip, and re-scores the rest through the same path as player guesses. Each submission costs one forward pass. Beam search runs once per completion when the puzzle is published (or on first request as a fallback), and the result is cached. A high-throughput engine such as vLLM isn't needed at prototype scale, and it can be swapped in behind the same interface later.
+**InferenceBackend on Hugging Face transformers.** A custom Python worker, hosted on a Fly CPU Machine, runs the model with PyTorch and transformers. For now that means unquantized Gemma 4 E2B, baked into the worker image. The weights revision and the machine size are pinned, because either one can shift scores slightly. A different quantization, engine (such as llama.cpp), or machine size may come later. Adding a model means building and deploying a new worker image, but no game deploy. After a worker rebuild or a hardware change, devs explicitly refresh the cached beams. They're never recomputed automatically, so the bar can't move in the middle of a playtest. The worker keeps the engine behind its own interface, so none of these changes touches the game. Each quantization is registered as a separate model, because its scores aren't comparable with another quantization's. Scoring an arbitrary guess needs the log probabilities of tokens the model did not generate. The worker runs one forward pass over the context plus the guess, applies the sampling settings to the full logits, and reads off each guess token's log probability. Beam search is a custom loop that produces exactly N tokens and never picks special tokens. The API then drops sequences that don't survive a decode-and-retokenize round trip, and re-scores the rest through the same path as player guesses. Each submission costs one forward pass. Beam search runs once per completion when the puzzle is published (or on first request as a fallback), and the result is cached. A high-throughput engine such as vLLM isn't needed at prototype scale, and it can be swapped in behind the same interface later.
 
-**Cold starts.** To keep prototype costs negligible, there's no always-on worker: the GPU endpoint scales to zero. A cold start takes tens of seconds, so the client asks the API to wake the worker as soon as a player opens a puzzle they haven't finished. The model loads while they read and type, and a themed "waking the clanker…" state covers any remaining wait. If that isn't enough, the next steps are a lighter quantization or engine, and an always-on worker only as a last resort.
+**Cold starts.** To keep prototype costs negligible, there's no always-on worker: the CPU Machine is stopped when idle. A cold start takes under ten seconds, but the client still pings the API to start the Machine eagerly, as soon as a player opens a puzzle they haven't finished. The model loads while they read and type, and a themed "waking the clanker…" state covers any remaining wait. If that isn't enough, the next steps are a lighter quantization or engine, and an always-on worker only as a last resort.
 
 **Rendering chats for a base model.** Base models have no chat format, so each model config includes a text template that turns the prompt and partial completion into raw text, for example `User: …\n\nAssistant: …`. The template is part of the context, and changing it changes every score.
 
