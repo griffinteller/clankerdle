@@ -1,23 +1,31 @@
 //! Clankerdle inference app — HTTP server entry point.
 //!
-//! Phase 0 scope (see spec/plan.md):
-//!   - read PORT / CLANKERDLE_MODEL_DIR from the environment
-//!   - validate the model directory (exactly one *.gguf + tokenizer.json)
-//!   - load the model once at startup
-//!   - start an actix-web server on 127.0.0.1 with permissive CORS
+//! Serves two endpoints (spec 5):
+//!   - `GET /tokenizer`  — streams the model dir's tokenizer.json
+//!   - `POST /score`     — one logprob per token of the player's text
 //!
-//! The actual endpoints (`GET /tokenizer`, `POST /score`) are Phase 1 and
-//! will be registered inside `configure_routes` below.
+//! Startup (spec 4.2): validate the model directory (exactly one *.gguf +
+//! tokenizer.json), load the model once, create one inference context, and
+//! share both behind a mutex so requests are scored one at a time.
 
+mod chat;
 mod model;
+mod score;
 
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use actix_cors::Cors;
-use actix_web::{web, App, HttpResponse, HttpServer};
+use actix_web::web::{self, Bytes};
+use actix_web::{App, HttpResponse, HttpServer};
+use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::model::LlamaModel;
+
+/// Size of the KV cache / batch, in tokens. Kept in one place (score.rs) so
+/// the server and the tests construct identical contexts.
 
 /// Server configuration, read once from the environment at startup.
 struct Config {
@@ -45,12 +53,40 @@ impl Config {
 
 /// Everything the request handlers need.
 ///
-/// The spec (4.2, Concurrency) says a single model is shared behind a mutex
-/// and requests are scored one at a time, which is fine for local use.
-#[derive(Clone)]
+/// The model and its context are loaded once at startup and shared behind a
+/// mutex: a single model + single context, requests scored one at a time
+/// (spec 4.2, Concurrency).
 struct AppState {
-    /// The loaded model. Handlers lock this during scoring.
-    model: web::Data<Mutex<LlamaModel>>,
+    /// The loaded model, shared by every handler. It is deliberately leaked
+    /// (see main) so it lives as long as the process — matching how the
+    /// context borrows from it — which is fine for a server that never
+    /// outlives its model anyway.
+    model: &'static LlamaModel,
+    /// Renders the GGUF's own chat template (see chat.rs). Immutable and
+    /// thread-safe, so it needs no mutex. In its own Arc so handlers can take
+    /// a cheap clone into the web::block closure.
+    renderer: web::Data<chat::ChatRenderer>,
+    /// The one inference context. Scoring locks this mutex.
+    context: web::Data<Mutex<LlamaContext<'static>>>,
+    /// Contents of tokenizer.json, read once at startup and served verbatim.
+    tokenizer_json: Bytes,
+}
+
+impl AppState {
+    /// Convenience constructor used by main: bundle the shared pieces.
+    fn new(
+        model: &'static LlamaModel,
+        renderer: web::Data<chat::ChatRenderer>,
+        context: web::Data<Mutex<LlamaContext<'static>>>,
+        tokenizer_json: Bytes,
+    ) -> web::Data<AppState> {
+        web::Data::new(AppState {
+            model,
+            renderer,
+            context,
+            tokenizer_json,
+        })
+    }
 }
 
 /// Permissive CORS (spec 4.2): any origin, but only the methods and
@@ -63,25 +99,64 @@ fn cors() -> Cors {
         .allowed_headers(vec!["Content-Type"])
 }
 
-/// Route registration. Phase 1 will add `GET /tokenizer` and `POST /score`
-/// here; for now the server just runs and answers 404 to everything, which
-/// is enough to smoke-test startup.
-fn configure_routes(_cfg: &mut web::ServiceConfig) {}
+/// `GET /tokenizer` (spec 5.1): serve tokenizer.json as-is.
+async fn tokenizer(state: web::Data<AppState>) -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .body(state.tokenizer_json.clone())
+}
 
-/// Temporary root handler for smoke-testing: proves the server is up and the
-/// model made it into the shared state. Removed when the real routes land.
-async fn index(state: web::Data<AppState>) -> HttpResponse {
-    // Lock the mutex just to prove the model is reachable from a handler.
-    let n_vocab = state
-        .model
-        .lock()
-        .expect("model mutex poisoned")
-        .n_vocab();
-    HttpResponse::Ok().json(serde_json::json!({ "status": "ok", "n_vocab": n_vocab }))
+/// `POST /score` (spec 5.2).
+async fn score(body: Bytes, state: web::Data<AppState>) -> HttpResponse {
+    // Parse by hand instead of using the Json extractor so malformed input
+    // gets our {"error": ...} body instead of actix's default.
+    let req: score::ScoreRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(e) => return bad_request(format!("malformed JSON: {e}")),
+    };
+
+    // The spec pins expected_num_tokens >= 1 (0 would mean "no tokens to score").
+    if req.expected_num_tokens < 1 {
+        return bad_request("expected_num_tokens must be >= 1".to_string());
+    }
+
+    // Scoring is blocking CPU work, so it runs on actix's thread pool via
+    // web::block instead of blocking an async worker. The context mutex is
+    // locked inside the closure and released before we await.
+    let context = state.context.clone();
+    let model = state.model;
+    let renderer = state.renderer.clone();
+    let result = web::block(move || {
+        let mut context = context.lock().expect("context mutex poisoned");
+        score::score(model, &renderer, &mut context, &req)
+    })
+    .await;
+
+    match result {
+        // Both variants (Logprobs and UnexpectedNumTokens) are 200s.
+        Ok(Ok(response)) => HttpResponse::Ok().json(response),
+        Ok(Err(e)) => server_error(e),
+        Err(_) => server_error("the scoring task failed to run".to_string()),
+    }
+}
+
+/// 400 with the spec's error body shape.
+fn bad_request(message: String) -> HttpResponse {
+    HttpResponse::BadRequest().json(serde_json::json!({ "error": message }))
+}
+
+/// 500 with the spec's error body shape.
+fn server_error(message: String) -> HttpResponse {
+    HttpResponse::InternalServerError().json(serde_json::json!({ "error": message }))
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // The app runs on the CPU only (spec 4.2), so ask ggml to create zero
+    // Metal devices. This skips Metal discovery at startup and avoids a
+    // llama.cpp crash in Metal cleanup on some macOS versions at exit.
+    std::env::set_var("GGML_METAL_DEVICES", "0");
+
     let config = Config::from_env();
 
     // Validate the model directory before touching llama.cpp, so a missing
@@ -92,27 +167,64 @@ async fn main() -> std::io::Result<()> {
     });
 
     // Initialize llama.cpp exactly once. The backend handle is an empty
-    // "proof of initialization" token; we keep it alive for the whole
-    // program, but the model itself does not borrow it.
-    let backend = LlamaBackend::init().unwrap_or_else(|e| {
-        eprintln!("error: failed to initialize llama backend: {e}");
-        std::process::exit(1);
-    });
+    // "proof of initialization" token. We leak it (and the model below) so
+    // both live for the rest of the process — the inference context borrows
+    // from the model, and a server never wants to drop its model anyway.
+    let backend: &'static LlamaBackend = Box::leak(Box::new(
+        LlamaBackend::init().unwrap_or_else(|e| {
+            eprintln!("error: failed to initialize llama backend: {e}");
+            std::process::exit(1);
+        }),
+    ));
 
     // Load the model once, before the server starts accepting requests.
-    let llama_model = model::load_model(&backend, &paths.gguf).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
+    let llama_model: &'static LlamaModel =
+        Box::leak(Box::new(model::load_model(backend, &paths.gguf).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        })));
     println!(
         "model loaded ({} context tokens trained, {} vocab size)",
         llama_model.n_ctx_train(),
         llama_model.n_vocab()
     );
 
-    // Shared state: one model behind one mutex (spec 4.2, Concurrency).
-    let model = web::Data::new(Mutex::new(llama_model));
-    let state = web::Data::new(AppState { model: model.clone() });
+    // One inference context, big enough for a puzzle prompt plus a guess
+    // in a single batch. Larger requests fail with a 500 (spec 5.2).
+    let context_params = LlamaContextParams::default()
+        .with_n_ctx(NonZeroU32::new(score::N_CTX))
+        .with_n_batch(score::N_CTX);
+    let context = llama_model.new_context(backend, context_params).unwrap_or_else(|e| {
+        eprintln!("error: failed to create inference context: {e}");
+        std::process::exit(1);
+    });
+
+    // Compile the GGUF's chat template and smoke-render one message so a
+    // broken template fails loudly at startup, not on the first request.
+    let renderer = web::Data::new(chat::ChatRenderer::new(llama_model).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }));
+    if let Err(e) = renderer.render_user_turn(llama_model, "startup check") {
+        eprintln!("error: the chat template does not render: {e}");
+        std::process::exit(1);
+    }
+
+    // Read tokenizer.json once; GET /tokenizer serves these bytes verbatim.
+    let tokenizer_json = Bytes::from(
+        std::fs::read(&paths.tokenizer_json).unwrap_or_else(|e| {
+            eprintln!("error: failed to read {}: {e}", paths.tokenizer_json.display());
+            std::process::exit(1);
+        }),
+    );
+
+    // Shared state: one model + one context behind one mutex (spec 4.2).
+    let state = AppState::new(
+        llama_model,
+        renderer,
+        web::Data::new(Mutex::new(context)),
+        tokenizer_json,
+    );
 
     let bind_addr = ("127.0.0.1", config.port);
     println!("listening on http://{}:{}", bind_addr.0, bind_addr.1);
@@ -121,8 +233,8 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(state.clone())
             .wrap(cors())
-            .route("/", web::get().to(index))
-            .configure(configure_routes)
+            .route("/tokenizer", web::get().to(tokenizer))
+            .route("/score", web::post().to(score))
     })
     .bind(bind_addr)?
     .run()

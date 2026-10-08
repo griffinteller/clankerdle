@@ -18,6 +18,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Safe bindings to llama.cpp (runs the Gemma GGUF on CPU)
 llama-cpp-2 = "0.1.159"
+minijinja = "2.24.0"
 
 [profile.release]
 # The model runs much faster with optimizations; we always run with --release.
