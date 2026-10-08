@@ -1,122 +1,54 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+// Phase 2: the app proves out spec 4.1 — load the tokenizer from the
+// inference app before anything else. Phase 3 replaces this screen with the
+// actual game UI (spec section 2).
+//
+//   - while the tokenizer is loading: "loading…"
+//   - if the fetch fails: a plain error message
+//   - once ready: the game would start here (phase 3)
+
+import { useEffect, useState } from "react";
+import { INFERENCE_URL } from "./config";
+import { loadTokenizer } from "./tokenizer";
+import "./App.css";
+
+// Status of the tokenizer load. This is all the app can do until the
+// tokenizer arrives, so it is the entire phase-2 UI.
+type Status =
+  | { kind: "loading" }
+  | { kind: "error"; message: string }
+  | { kind: "ready" };
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [status, setStatus] = useState<Status>({ kind: "loading" });
+
+  // Fetch tokenizer.json from the inference app once. In dev, React's
+  // StrictMode mounts twice, so this may run twice — harmless (the tokenizer
+  // is small and stateless; phase 3 will keep the loaded tokenizer in
+  // component state instead).
+  useEffect(() => {
+    let cancelled = false;
+    loadTokenizer(INFERENCE_URL)
+      .then(() => {
+        if (!cancelled) setStatus({ kind: "ready" });
+      })
+      .catch((err: unknown) => {
+        // A plain error message (spec 4.1): no retry, no stack.
+        const message = err instanceof Error ? err.message : String(err);
+        if (!cancelled) setStatus({ kind: "error", message });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+    <main>
+      <h1>Clankerdle</h1>
+      {status.kind === "loading" && <p>loading…</p>}
+      {status.kind === "error" && <p className="error">{status.message}</p>}
+      {status.kind === "ready" && <p>tokenizer ready — phase 3 adds the game.</p>}
+    </main>
+  );
 }
 
-export default App
+export default App;

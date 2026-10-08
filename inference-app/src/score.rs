@@ -19,11 +19,23 @@ use crate::chat::ChatRenderer;
 use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::LlamaModel;
+use llama_cpp_2::token::LlamaToken;
 
 /// Size of the KV cache / batch, in tokens (spec allows failing with a 500
 /// "context too long" error, which happens naturally if a request exceeds
 /// this). Hand-written puzzles stay far below it.
-pub(crate) const N_CTX: u32 = 4096;
+pub const N_CTX: u32 = 4096;
+
+/// Tokenize the player's text with the exact rules the frontend uses
+/// (spec 4.1): **no** BOS or EOS added, **no** dummy-prefix space, and
+/// special-token strings (e.g. `<turn|>`) parsed as single tokens.
+///
+/// This one function is the single source of the parity-critical rules:
+/// `score()` and the parity-test bin (`bin/tokenize.rs`) both call it, so
+/// the rules cannot drift apart.
+pub fn tokenize_text(model: &LlamaModel, text: &str) -> Vec<LlamaToken> {
+    model.vocab().tokenize(text.as_bytes(), false, true)
+}
 
 /// `POST /score` request body (spec 5.2).
 #[derive(Debug, serde::Deserialize)]
@@ -94,8 +106,8 @@ pub fn score(
         context_tokens.insert(0, vocab.bos());
     }
 
-    // The player's text: no BOS, no EOS, no dummy prefix — spec 4.1 rules.
-    let text_tokens = vocab.tokenize(req.text.as_bytes(), false, true);
+    // The player's text: the spec 4.1 rules, in their one true place above.
+    let text_tokens = tokenize_text(model, &req.text);
 
     // ---- 3. Token-count check (no inference if it fails) ----
 
@@ -286,7 +298,7 @@ mod tests {
         // self-consistent whatever the tokenizer does with it.
         let text = "I can help with that!";
         let engine = engine();
-        let n = engine.model.vocab().tokenize(text.as_bytes(), false, true).len() as u32;
+        let n = tokenize_text(engine.model, text).len() as u32;
         assert!(n >= 1, "text should not be empty after tokenizing");
 
         let req = test_request("Can you help me?", "", text, n);

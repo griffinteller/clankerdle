@@ -2,6 +2,8 @@
 name = "inference-app"
 version = "0.1.0"
 edition = "2021"
+# `cargo run` (spec section 6) must start the server, not the parity helper.
+default-run = "inference-app"
 
 # Clankerdle's inference server.
 #

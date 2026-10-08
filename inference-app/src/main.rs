@@ -7,10 +7,11 @@
 //! Startup (spec 4.2): validate the model directory (exactly one *.gguf +
 //! tokenizer.json), load the model once, create one inference context, and
 //! share both behind a mutex so requests are scored one at a time.
+//!
+//! The actual logic lives in the library crate (`src/lib.rs`); this file is
+//! the thin HTTP layer.
 
-mod chat;
-mod model;
-mod score;
+use inference_app::{chat, model, score};
 
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -23,9 +24,6 @@ use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::model::LlamaModel;
-
-/// Size of the KV cache / batch, in tokens. Kept in one place (score.rs) so
-/// the server and the tests construct identical contexts.
 
 /// Server configuration, read once from the environment at startup.
 struct Config {
