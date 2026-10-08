@@ -1,3 +1,9 @@
-target/
-**/.env
-.venv/
+# Model files are large and downloaded separately (see spec section 4.2)
+models/
+
+# Rust build output
+inference-app/target/
+
+# Node / Vite
+frontend/node_modules/
+frontend/dist/

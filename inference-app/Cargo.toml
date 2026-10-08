@@ -1,0 +1,24 @@
+[package]
+name = "inference-app"
+version = "0.1.0"
+edition = "2021"
+
+# Clankerdle's inference server.
+#
+# Deliberately minimal: actix-web for HTTP, llama-cpp-2 to run the model on
+# CPU, and serde for JSON. See spec/clankerdle-spec.md section 4.2.
+
+[dependencies]
+# HTTP server
+actix-web = "4"
+# Permissive CORS so the Vite dev server (localhost:5173) can call us
+actix-cors = "0.7"
+# JSON serialization for the /score request/response types
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Safe bindings to llama.cpp (runs the Gemma GGUF on CPU)
+llama-cpp-2 = "0.1.159"
+
+[profile.release]
+# The model runs much faster with optimizations; we always run with --release.
+opt-level = 3
