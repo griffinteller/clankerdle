@@ -1,14 +1,15 @@
 /* Clankerdle global styles — spec 2.1: "monospace text on a plain
-   background", nothing more. Phase 3 adds only what the game screens
-   need (token colors, bars). */
+   background". The polish pass makes that plain background a light grey,
+   and fixes the color scheme to light (the app picks its own colors, so
+   don't let the system dark mode shift form controls / scrollbars). */
 
 :root {
   font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   font-size: 16px;
-  line-height: 1.4;
-  color: #111;
-  background-color: #fff;
-  color-scheme: light dark;
+  line-height: 1.45;
+  color: #333;
+  background-color: #ececec;
+  color-scheme: light;
 }
 
 * {

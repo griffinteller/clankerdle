@@ -1,7 +1,6 @@
-/* Clankerdle app styles — spec 2.1: monospace on a plain background,
-   no branding beyond a small title, no specific palette. */
-
-/* html/body plainness lives in index.css (loaded once in main.tsx). */
+/* Clankerdle app styles — spec 2.1: monospace text on a plain (grey)
+   background, no branding beyond a small title. Global font/colors live
+   in index.css (loaded once in main.tsx). */
 
 main {
   margin: 2rem auto;
@@ -11,8 +10,282 @@ main {
 
 h1 {
   font-size: 1.1rem;
+  margin: 0 0 1.25rem;
 }
 
+/* A plain error line, wherever one is shown (spec 5.2). */
 .error {
   color: #a33;
+  white-space: pre-wrap;
+}
+
+/* ---- Screens as layers: fade-in + the pseudo-scroll ----
+   App stacks whole screens as layer divs inside a .stage (App.tsx):
+
+   - .layer            a game screen (challenge or summary): fades in
+                       *from the bottom* (rise) when it mounts
+   - .layer-out        the outgoing snapshot of a pseudo-scroll: slides
+                       up and fades out over the incoming layer
+   - .layer-in-place   the loading… screen: fades in on mount, never
+                       travels (loading text is not a puzzle)
+   - .layer-in-place-out  the loading… screen fading out right before the
+                       first challenge rises in beneath it
+
+   App only mounts/unmounts these; all motion is CSS, here. */
+
+/* The stage is the stacking context the layers crossfade within. */
+.stage {
+  position: relative;
+}
+
+/* In flow: this layer defines the stage's height. */
+.layer {
+  position: relative;
+  animation: fade-rise 350ms ease-out backwards;
+}
+
+/* Overlaid on the stage (height-neutral), non-clickable, on top of
+   nothing: both layers are visible during a scroll, the outgoing one
+   on top while it fades. */
+.layer-out {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 0;
+  pointer-events: none;
+  animation: fade-fall 350ms ease-in forwards;
+}
+
+/* The loading… layer: fades in on mount and stays put — no rise. */
+.layer-in-place {
+  position: relative;
+  animation: fade-in 300ms ease-out backwards;
+}
+
+/* The loading… layer fading out: App keeps it mounted for
+   LOADING_FADE_MS after the tokenizer arrives, so it disappears right
+   before the first challenge rises in beneath it (polish: the loading
+   text must not scroll up like a puzzle does). */
+.layer-in-place-out {
+  position: relative;
+  animation: fade-out 250ms ease-in forwards;
+}
+
+/* "The text fades in": rise from below and settle. */
+@keyframes fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(48px);
+  }
+}
+
+/* Plain opacity fade, no travel. */
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+@keyframes fade-out {
+  to { opacity: 0; }
+}
+
+/* "The old puzzle goes up and fades out" — and it must be *fully* faded
+   before the rise reaches the title (polish: no overlapping the title on
+   the way out). The title sits ~35px above the stage, so the fade runs to
+   0 across just the first ~30% of the 64px rise (holding one beat first):
+   the layer is invisible after ~15px of travel, with plenty of margin. A
+   plain `to { opacity: 0 }` linear fade would still be ~15% visible while
+   crossing the title. `forwards` keeps it invisible until App unmounts
+   the layer after TRANSITION_MS. */
+@keyframes fade-fall {
+  10%  { opacity: 1; transform: translateY(0); }
+  30%  { opacity: 0; }
+  100% { opacity: 0; transform: translateY(-64px); }
+}
+
+/* The snapshot mounts fresh, so its reveal animations (bars growing,
+   fades) would replay — suppress them: the snapshot is already finished. */
+.layer-out .bar,
+.layer-out .lp,
+.layer-out .score-line,
+.layer-out .hint,
+.layer-out .cursor {
+  animation: none;
+}
+
+/* ---- Challenge screen (spec 2.2) ---- */
+
+/* Clicking anywhere in the challenge focuses the (invisible) input, so
+   the whole area behaves like one big text field. position:relative keeps
+   the invisible textarea contained. */
+.challenge {
+  position: relative;
+}
+
+/* Read-only context text: pre-wrap so any newlines/spaces in the
+   hand-written context stay visible. */
+.context-line {
+  white-space: pre-wrap;
+  margin: 0 0 0.5rem;
+}
+
+/* The assistant line (line 2): the element that shakes on a wrong token
+   count (spec 2.2). */
+.assistant-line {
+  padding-bottom: 0.25rem;
+}
+
+/* ~300 ms horizontal shake (spec 2.2). Restarted imperatively in
+   ChallengeView (toggling the class with a reflow in between). */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
+.shake {
+  animation: shake 300ms;
+}
+
+/* One visual line of the assistant line: a normal block whose children
+   are inline, so the label/prefix/cells wrap like text. */
+.display-line {
+  min-height: 1.45em; /* keep empty lines (from trailing newlines) tall */
+}
+
+/* A cell is an inline-flex *column*: token text on top, and in the reveal
+   the bar + number hanging underneath. Inline-level boxes wrap as units,
+   and the first flex item (the text) sets the box's baseline — so every
+   cell's text sits on one baseline and every bar starts directly under
+   it (spec 2.3: bars "hang down from a common baseline directly under
+   the text"). */
+.cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 100%;
+}
+
+/* Token text: pre-wrap so spaces inside a token stay visible as colored
+   space (spec 2.2); overflow-wrap so one huge token can't push the layout
+   sideways. The ↵ glyph and line breaks come from display.ts. */
+.cell .text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The pale token palette (spec 2.2: "a small fixed list of pale colors"),
+   cycled by token index (NUM_TOKEN_COLORS in AssistantLine.tsx = 4). */
+.token-0 { background-color: #cfe4ff; } /* pale blue   */
+.token-1 { background-color: #d2eed7; } /* pale green  */
+.token-2 { background-color: #ffedc2; } /* pale yellow */
+.token-3 { background-color: #fcd8e8; } /* pale pink   */
+
+/* The blinking block cursor after the input (spec 2.2). */
+@keyframes blink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.cursor {
+  animation: blink 1s infinite;
+}
+
+/* The n/N counter, right-aligned under the assistant line (spec 2.2). */
+.counter {
+  text-align: right;
+}
+
+/* ---- Reveal (spec 2.3) ---- */
+
+/* The challenge score and the continue hint. They fade in after the bars
+   finish their stagger — the delay is computed in RevealView and set
+   inline per challenge. */
+.score-line {
+  margin-top: 0.75rem;
+  animation: fade-in 300ms ease-out backwards;
+}
+.hint {
+  color: #777;
+  margin-top: 0.75rem;
+  animation: fade-in 300ms ease-out backwards;
+}
+
+/* One hanging bar (spec 2.3): a rounded strip centered under its token,
+   hanging from the shared baseline just under the text. Polished: a dark
+   gradient with rounded ends, and it *grows downward* (transform-origin
+   at the top) with a per-token stagger — the height is the true length
+   (proportional to |logprob|, clamped at -15 — see AssistantLine.tsx),
+   only the animation delay is set inline. */
+.bar {
+  width: 4px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #555, #2c2c2c);
+  margin-top: 2px;
+  transform-origin: top;
+  animation: bar-grow 280ms ease-out backwards;
+}
+@keyframes bar-grow {
+  from { transform: scaleY(0); }
+}
+
+/* The true logprob printed under each bar, 2 decimal places (spec 2.3).
+   Fades in a beat after its bar (delay inline, from AssistantLine.tsx). */
+.lp {
+  font-size: 0.7rem;
+  color: #555;
+  white-space: nowrap;
+  animation: fade-in 250ms ease-out backwards;
+}
+
+/* The real input element (spec 2.2): a textarea kept out of sight but
+   focused, so all native editing — typing, arrows, backspace, paste —
+   works unmodified. One pixel, fully transparent, no resize handle. */
+.hidden-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  opacity: 0;
+  resize: none;
+  overflow: hidden;
+}
+
+/* ---- Summary screen (spec 2.4, plan 3.7) ---- */
+
+/* One row per challenge: #idx | score | emoji squares. Grid columns keep
+   the rows aligned like the spec's example. */
+.summary-row {
+  display: grid;
+  grid-template-columns: 3ch 8ch auto;
+  gap: 0 1ch;
+  margin: 0.25rem 0;
+}
+
+/* Emoji squares run together with no gaps (spec 2.4: "🟩🟩🟥…"). */
+.summary-emoji {
+  letter-spacing: 0;
+}
+
+.summary-total {
+  margin-top: 1rem;
+}
+
+/* ---- Motion hygiene ----
+   Respect the system reduced-motion setting: everything is still fully
+   usable without animation, bars just appear at full length. */
+@media (prefers-reduced-motion: reduce) {
+  .layer,
+  .layer-out,
+  .layer-in-place,
+  .layer-in-place-out,
+  .bar,
+  .lp,
+  .score-line,
+  .hint,
+  .cursor,
+  .shake {
+    animation: none;
+  }
 }

@@ -30,9 +30,10 @@ The game is **stateless across refreshes**. Reloading the page starts the set ov
 
 The UI is very simple and plain:
 
-- Monospace text on a plain background.
-- No branding beyond a small "Clankerdle" title.
-- No specific color palette is defined.
+- Monospace text on a plain light-grey background.
+- No branding beyond a small title with the game's name.
+- The game's name is configurable from one variable: `GAME_NAME` in `frontend/src/config.ts` (default `"Clankerdle"`), overridable with `VITE_GAME_NAME`. It drives the title on every screen and the browser tab title; `index.html`'s `<title>` is only the pre-JS fallback.
+- Beyond that, the only colors are the pale token-highlight palette (§ 2.2) and the bar styling (§ 2.3).
 
 ### 2.2 Challenge screen
 
@@ -62,7 +63,7 @@ Assistant: Absolutely! Here's| a draft you can tailor▌
 - Whitespace-only tokens must still be visible:
   - A space shows as a colored space.
   - A newline token shows as a `↵` glyph before the line break.
-- If the player types a special-token string literally, such as `<end_of_turn>`, it is tokenized as that **single special token** and colored as one token.
+- If the player types a special-token string literally, it is tokenized as that **single special token** and colored as one token. Which strings are special depends on the tokenizer: the bundled Gemma 4 tokenizer's specials are `<|turn>`, `<turn|>` and friends — Gemma 3's `<end_of_turn>` is *not* special here and tokenizes as ordinary text.
 
 **Token counter**
 
@@ -129,6 +130,15 @@ Total: -52.29
 | 🟩    | `lp ≥ -1`        |
 | 🟨    | `-4 ≤ lp < -1`   |
 | 🟥    | `lp < -4`        |
+
+### 2.5 Motion
+
+All motion is CSS, and `prefers-reduced-motion` turns it off — everything stays fully usable with animation disabled.
+
+- **Screens fade in.** Each challenge and the summary fade in and rise from the bottom when they mount. The `loading…` and error screens fade in without moving — they are not puzzles.
+- **The loading handoff.** `loading…` appears, then fades out *in place* once the tokenizer arrives; only then does the first challenge rise in. The loading text never scrolls up.
+- **The reveal animates.** Bars grow downward from their shared baseline, one after another with a small per-token stagger; each bar's number fades in just after its bar; the score line and the continue hint fade in once the bars finish.
+- **Continue is a pseudo-scroll.** On Enter, the finished challenge slides up while fading out, and the next challenge (or the summary) fades in from the bottom. The outgoing layer is fully faded before its rise can reach the title.
 
 ---
 
@@ -301,6 +311,7 @@ npm run dev   # http://localhost:5173
   - `UnexpectedNumTokens` when the counts differ
   - the logprobs length equals `expected_num_tokens`
   - all logprobs are ≤ 0
+- **Render smoke test:** server-render the `loading…`, challenge, reveal and summary screens through Vite's SSR transform with the real tokenizer and puzzle data, and assert the HTML shape: the context lines, the `n/N` counter, the cursor, the colored token cells, the bars, the −15 clamp (full-length bar, true printed number), the emoji thresholds and the totals. Run with `npm run test:render` in `frontend/`.
 - **Manual check:** the logprobs for a puzzle's "obvious" continuation should be close to 0.
 
 ---

@@ -1,0 +1,20 @@
+[
+  {
+    "id": "001",
+    "prompt": "Can you help me write a cover letter?",
+    "assistant_prefix": "",
+    "expected_num_tokens": 10
+  },
+  {
+    "id": "002",
+    "prompt": "What's the capital of France?",
+    "assistant_prefix": "The capital of France",
+    "expected_num_tokens": 3
+  },
+  {
+    "id": "003",
+    "prompt": "Count from one to five.",
+    "assistant_prefix": "",
+    "expected_num_tokens": 15
+  }
+]

@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test:parity": "node scripts/parity.mjs"
+    "test:parity": "node scripts/parity.mjs",
+    "test:render": "node scripts/smoke-render.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.1",
